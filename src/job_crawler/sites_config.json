@@ -1,0 +1,33 @@
+{
+  "sites": [
+    {
+      "name": "topcv",
+      "start_url_template": "https://www.topcv.vn/tim-viec-lam{keyword_path}",
+      "default_keyword": "",
+      "needs_playwright_list": true,
+      "needs_playwright_detail": true,
+
+      "list_item_selector": "div.job-item-search-result",
+      "list_title_selector": "h3.title a::text, h3.title a span::text",
+      "list_company_selector": "a.company::text, span.company-name::text",
+      "list_location_selector": "a.address, .address.truncate, span.address, div.address, label.address",
+      "list_salary_selector": "label.title-salary::text, div.salary::text, span.salary::text",
+      "list_url_selector": "h3.title a::attr(href)",
+
+      "detail_description_selector": "div.box-job-info, div.content-tab, div.job-description, div.job-description__item, div.job-description__item--content"
+    },
+    {
+      "name": "itviec_python",
+      "start_url": "https://itviec.com/it-jobs/python",
+      "needs_playwright_list": true,
+      "needs_playwright_detail": true,
+      "list_item_selector": "div.job-content",
+      "list_title_selector": "h3.title a::text",
+      "list_company_selector": "a.company::text",
+      "list_location_selector": "div.city::text",
+      "list_salary_selector": "label.salary::text",
+      "list_url_selector": "h3.title a::attr(href)",
+      "detail_description_selector": "div.job-description"
+    }
+  ]
+}
