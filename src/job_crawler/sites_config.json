@@ -6,26 +6,27 @@
       "default_keyword": "",
       "needs_playwright_list": true,
       "needs_playwright_detail": true,
-
+      "use_side_panel": false,
       "list_item_selector": "div.job-item-search-result",
-      "list_title_selector": "h3.title a::text, h3.title a span::text",
-      "list_company_selector": "a.company::text, span.company-name::text",
-      "list_location_selector": "a.address, .address.truncate, span.address, div.address, label.address",
-      "list_salary_selector": "label.title-salary::text, div.salary::text, span.salary::text",
+      "list_title_selector": "h3.title a, h3.title",
+      "list_company_selector": "span.company-name, a.company",
+      "list_location_selector": "a.address, .address.truncate, span.address",
+      "list_salary_selector": "label.title-salary, .title-salary",
       "list_url_selector": "h3.title a::attr(href)",
-
-      "detail_description_selector": "div.box-job-info, div.content-tab, div.job-description, div.job-description__item, div.job-description__item--content"
+      "detail_description_selector": "div.job-data, div.box-job-info, div.job-description, #box-job-information-detail",
+      "location_exp_url_template": "https://www.topcv.vn/tim-viec-lam{keyword_path}-tai-{location_slug}-kl{location_id}"
     },
     {
       "name": "itviec_python",
       "start_url": "https://itviec.com/it-jobs/python",
       "needs_playwright_list": true,
-      "needs_playwright_detail": true,
+      "needs_playwright_detail": false,
+      "use_side_panel": false,
       "list_item_selector": "div.job-content",
-      "list_title_selector": "h3.title a::text",
-      "list_company_selector": "a.company::text",
-      "list_location_selector": "div.city::text",
-      "list_salary_selector": "label.salary::text",
+      "list_title_selector": "h3.title a",
+      "list_company_selector": "a.company",
+      "list_location_selector": "div.city",
+      "list_salary_selector": "label.salary",
       "list_url_selector": "h3.title a::attr(href)",
       "detail_description_selector": "div.job-description"
     }

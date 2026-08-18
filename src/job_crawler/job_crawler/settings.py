@@ -23,8 +23,9 @@ NEWSPIDER_MODULE = "job_crawler.spiders"
 # có thể fail âm thầm hoặc rơi vào default handler.
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
 
-# Log rõ ràng để dễ debug (đổi thành "INFO" khi chạy production ổn định)
-LOG_LEVEL = "DEBUG"
+# Log rõ ràng để dễ debug. DEBUG rất tốn I/O vì scrapy-playwright log từng
+# request/response/CDP frame — chỉ bật khi thật sự cần debug, còn lại dùng INFO.
+LOG_LEVEL = os.getenv("SCRAPY_LOG_LEVEL", "INFO")
 
 
 # Crawl responsibly by identifying yourself (and your website) on the user-agent
@@ -44,9 +45,14 @@ DOWNLOAD_HANDLERS = {
 PLAYWRIGHT_BROWSER_TYPE = "chromium"
 
 # Cấu hình các tham số khởi động trình duyệt để tối ưu tài nguyên
+# QUAN TRỌNG: headless=False + slow_mo=50 là nguyên nhân chính gây chậm.
+# slow_mo cộng thêm 50ms vào MỖI lệnh Playwright (mỗi query_selector, click,
+# inner_text...) — với ~25-30 lệnh/job-card thì chỉ riêng slow_mo đã tốn
+# 1.2-1.5s/card, chưa kể chi phí render GUI khi headless=False.
+# Đặt PLAYWRIGHT_HEADLESS=false trong .env khi cần debug trực quan.
 PLAYWRIGHT_LAUNCH_OPTIONS = {
-    "headless": False,
-    "slow_mo": 50,
+    "headless": os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() != "false",
+    "slow_mo": int(os.getenv("PLAYWRIGHT_SLOW_MO", "0")),
     "args": [
         "--disable-gpu",
         "--no-sandbox",
@@ -68,7 +74,7 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
 
 # Giới hạn số page Playwright mở đồng thời trong 1 context
 # (mặc định = CONCURRENT_REQUESTS → dễ OOM / TargetClosedError)
-PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 3
+PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 2
 
 # Timeout navigation mặc định (ms) — tránh treo quá lâu
 PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT = 45000
@@ -105,22 +111,13 @@ PLAYWRIGHT_ABORT_REQUEST_MIME_TYPES = [
 
 # -- Tối ưu hiệu suất và tài nguyên theo kế hoạch --
 
-# Giới hạn số request đồng thời. Với Playwright mỗi request = 1 tab,
-# để 3–4 là an toàn trên máy 16GB (tránh TargetClosedError do OOM/crash).
+# List+detail mode: 3 tab song song ổn trên máy 16GB
 CONCURRENT_REQUESTS = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 1
 
 # Tự động điều chỉnh tốc độ crawl để tránh làm quá tải server
 AUTOTHROTTLE_ENABLED = True
-# The initial download delay
-# AUTOTHROTTLE_START_DELAY = 5
-# The maximum download delay to be set in case of high latencies
-# AUTOTHROTTLE_MAX_DELAY = 60
-# The average number of requests Scrapy should be sending in parallel to
-# each remote server
-# AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
-# Enable showing throttling stats for every response received:
-# AUTOTHROTTLE_DEBUG = False
+
 
 # Giới hạn bộ nhớ, tự động dừng nếu vượt quá 2GB RAM
 MEMUSAGE_LIMIT_MB = 2048
@@ -158,10 +155,9 @@ ITEM_PIPELINES = {
 RANDOMIZE_DOWNLOAD_DELAY = True
 DOWNLOAD_DELAY = 2.0
 
-# Tăng delay ban đầu của AutoThrottle để giảm áp lực lên browser
-AUTOTHROTTLE_START_DELAY = 2.0
+AUTOTHROTTLE_START_DELAY = 1.0
 AUTOTHROTTLE_MAX_DELAY = 30.0
-AUTOTHROTTLE_TARGET_CONCURRENCY = 1.5
+AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
 
 # Cấu hình database từ biến môi trường
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")

@@ -16,6 +16,8 @@ class PostgresPipeline:
     def __init__(self, db_settings):
         self.db_settings = db_settings
         self.pool = None
+        self.saved_count = 0
+        self.failed_count = 0
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -41,7 +43,6 @@ class PostgresPipeline:
             spider.logger.error(f"Không thể kết nối đến PostgreSQL: {e}")
             raise NotConfigured(f"Lỗi kết nối PostgreSQL: {e}")
 
-        # Tạo bảng nếu chưa có
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS job_listings (
             id SERIAL PRIMARY KEY,
@@ -53,20 +54,16 @@ class PostgresPipeline:
             job_url TEXT UNIQUE,
             job_description TEXT,
             job_requirements TEXT,
-            tech_stack TEXT,
             job_benefits TEXT,
-            job_description_raw TEXT,
             match_score INTEGER,
             ai_analysis TEXT,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
         """
-        # Thêm cột mới nếu bảng cũ đã tồn tại (không phá dữ liệu cũ)
         alter_columns = [
             "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS experience TEXT",
             "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_description TEXT",
             "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_requirements TEXT",
-            "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS tech_stack TEXT",
             "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_benefits TEXT",
         ]
         try:
@@ -83,6 +80,10 @@ class PostgresPipeline:
         if self.pool:
             spider.logger.info("Đóng kết nối PostgreSQL.")
             await self.pool.close()
+        spider.logger.info(
+            f"===== TỔNG KẾT: đã lưu {self.saved_count} job "
+            f"(lỗi: {self.failed_count}) ====="
+        )
 
     async def process_item(self, item, spider):
         if not self.pool:
@@ -91,13 +92,12 @@ class PostgresPipeline:
 
         async with self.pool.acquire() as conn:
             try:
-                result = await conn.execute(
+                await conn.execute(
                     """
                     INSERT INTO job_listings (
                         job_title, company_name, location, salary_range, experience,
-                        job_url, job_description, job_requirements, tech_stack,
-                        job_benefits, job_description_raw
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                        job_url, job_description, job_requirements, job_benefits
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                     ON CONFLICT (job_url) DO UPDATE SET
                         job_title = EXCLUDED.job_title,
                         company_name = EXCLUDED.company_name,
@@ -106,9 +106,7 @@ class PostgresPipeline:
                         experience = EXCLUDED.experience,
                         job_description = EXCLUDED.job_description,
                         job_requirements = EXCLUDED.job_requirements,
-                        tech_stack = EXCLUDED.tech_stack,
-                        job_benefits = EXCLUDED.job_benefits,
-                        job_description_raw = EXCLUDED.job_description_raw
+                        job_benefits = EXCLUDED.job_benefits
                     ;
                     """,
                     item.get("job_title"),
@@ -119,14 +117,14 @@ class PostgresPipeline:
                     item.get("job_url"),
                     item.get("job_description"),
                     item.get("job_requirements"),
-                    item.get("tech_stack"),
                     item.get("job_benefits"),
-                    item.get("job_description_raw"),
                 )
                 spider.logger.info(f"Đã lưu job: {item.get('job_title')}")
+                self.saved_count += 1
             except Exception as e:
                 spider.logger.error(
                     f"Lỗi khi lưu item vào DB: {e} | title={item.get('job_title')}"
                 )
+                self.failed_count += 1
 
         return item
