@@ -110,7 +110,7 @@ PLAYWRIGHT_ABORT_REQUEST_MIME_TYPES = [
 
 
 # -- Tối ưu hiệu suất--
-CONCURRENT_REQUESTS = 2
+CONCURRENT_REQUESTS = 1
 CONCURRENT_REQUESTS_PER_DOMAIN = 2
 
 # Tự động điều chỉnh tốc độ crawl để tránh làm quá tải server

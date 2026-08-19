@@ -24,7 +24,7 @@ class GenericJobSpider(scrapy.Spider):
 
     def __init__(
         self, config_file=None, site_name=None, keyword=None, filters=None,
-        max_pages=None, location=None, exp=None, *args, **kwargs
+        max_pages=None, location="Hồ Chí Minh", exp=None, *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
 

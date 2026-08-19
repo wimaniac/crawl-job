@@ -15,20 +15,6 @@
       "list_url_selector": "h3.title a::attr(href)",
       "detail_description_selector": "div.job-data, div.box-job-info, div.job-description, #box-job-information-detail",
       "location_exp_url_template": "https://www.topcv.vn/tim-viec-lam{keyword_path}-tai-{location_slug}-kl{location_id}"
-    },
-    {
-      "name": "itviec_python",
-      "start_url": "https://itviec.com/it-jobs/python",
-      "needs_playwright_list": true,
-      "needs_playwright_detail": false,
-      "use_side_panel": false,
-      "list_item_selector": "div.job-content",
-      "list_title_selector": "h3.title a",
-      "list_company_selector": "a.company",
-      "list_location_selector": "div.city",
-      "list_salary_selector": "label.salary",
-      "list_url_selector": "h3.title a::attr(href)",
-      "detail_description_selector": "div.job-description"
     }
   ]
 }

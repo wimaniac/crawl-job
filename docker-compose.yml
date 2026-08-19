@@ -1,27 +1,143 @@
+# AI Job Search & Analysis Pipeline
+# Services: postgres | ollama | app (crawl / analyze / notify)
+
 services:
   postgres:
-    image: postgres:15-alpine
-    container_name: job_search_db
+    image: postgres:16-alpine
+    container_name: jobsearch-db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_USER: ${POSTGRES_USER:-jobuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobpass}
       POSTGRES_DB: ${POSTGRES_DB:-job_search}
-      POSTGRES_HOST_AUTH_METHOD: "trust" # Tin tưởng kết nối từ các container khác
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jobuser} -d ${POSTGRES_DB:-job_search}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   ollama:
     image: ollama/ollama:latest
-    container_name: job_search_ollama
+    container_name: jobsearch-ollama
+    restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
+    # Bỏ comment nếu có NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  # Pull model một lần rồi thoát
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: jobsearch-ollama-init
+    depends_on:
+      ollama:
+        condition: service_started
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Ollama..."
+        until ollama list >/dev/null 2>&1; do sleep 2; done
+        echo "Pulling ${OLLAMA_LLM_MODEL:-phi3:mini} ..."
+        ollama pull ${OLLAMA_LLM_MODEL:-phi3:mini}
+        echo "Ollama model ready."
+    restart: "no"
+
+  # Container app luôn chạy (để docker compose exec).
+  # ENTRYPOINT mặc định từ Dockerfile = python -m src.main
+  # Override bằng sleep để container không thoát ngay.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jobsearch-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-jobuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobpass}
+      POSTGRES_DB: ${POSTGRES_DB:-job_search}
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-phi3:mini}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+      HF_EMBED_MODEL: ${HF_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      MAX_PAGES: ${MAX_PAGES:-5}
+      NOTIFY_MIN_SCORE: ${NOTIFY_MIN_SCORE:-70}
+    volumes:
+      - ./src:/app/src
+      - ./cv_data:/app/cv_data:ro
+      - cv_index:/app/storage/cv_index
+      - hf_cache:/app/.cache/huggingface
+      - ./logs:/app/logs
+    # Giữ container sống; chạy pipeline bằng exec hoặc service `pipeline` bên dưới
+    entrypoint: ["sleep", "infinity"]
     restart: unless-stopped
 
+  # One-shot: docker compose run --rm pipeline --crawl --analyze --notify -a ...
+  # Kế thừa image/env từ app, dùng ENTRYPOINT Dockerfile (python -m src.main)
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["pipeline"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-jobuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobpass}
+      POSTGRES_DB: ${POSTGRES_DB:-job_search}
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-phi3:mini}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+      HF_EMBED_MODEL: ${HF_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+      MAX_PAGES: ${MAX_PAGES:-5}
+      NOTIFY_MIN_SCORE: ${NOTIFY_MIN_SCORE:-70}
+    volumes:
+      - ./src:/app/src
+      - ./cv_data:/app/cv_data:ro
+      - cv_index:/app/storage/cv_index
+      - hf_cache:/app/.cache/huggingface
+      - ./logs:/app/logs
+    # Không override entrypoint → chạy: python -m src.main <args>
+    restart: "no"
+
 volumes:
-  postgres_data:
+  pgdata:
   ollama_data:
+  cv_index:
+  hf_cache:

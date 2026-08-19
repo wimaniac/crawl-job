@@ -1,160 +1,205 @@
 # AI Job Search & Analysis Pipeline
 
-Dự án này là một pipeline tự động hóa hoàn chỉnh giúp bạn tìm kiếm, phân tích và sàng lọc các tin tuyển dụng phù hợp nhất với CV của bạn.
+Thu thập việc làm (TopCV, …) bằng **Scrapy + Playwright**, lưu **PostgreSQL**, chấm điểm phù hợp với **CV** bằng **LLM local (Ollama)** + embedding **HuggingFace**, gửi email các job đạt ngưỡng.
 
-## 1. Tổng quan (Overview)
+## Cấu trúc
 
-Thay vì phải duyệt thủ công qua nhiều trang web tuyển dụng mỗi ngày, hệ thống này sẽ:
-1.  **Tự động thu thập (Crawl)** các tin tuyển dụng từ các trang web được chỉ định.
-2.  **Phân tích bằng AI (Analyze)** từng tin tuyển dụng để so sánh với CV của bạn, chấm điểm mức độ phù hợp và đưa ra tóm tắt.
-3.  **Gửi báo cáo (Report)** qua email mỗi ngày, liệt kê các công việc phù hợp nhất.
-
-Tất cả được điều phối thông qua một pipeline ETL (Extract, Transform, Load) mạnh mẽ và hiệu quả.
-
-## 2. Công nghệ sử dụng (Tech Stack)
-
--   **Thu thập dữ liệu:** Scrapy & `scrapy-playwright`
--   **Phân tích AI (RAG):** LlamaIndex
--   **Mô hình ngôn ngữ (LLM):** Ollama (sử dụng model `phi3:mini`)
--   **Cơ sở dữ liệu:** PostgreSQL
--   **Môi trường & Dependencies:** `uv` & Docker
--   **Ngôn ngữ:** Python
-
-## 3. Cấu trúc thư mục (Project Structure)
-
-```
-.
-├── cv_data/                  # Nơi để chứa file CV.pdf của bạn
-├── docker-compose.yml        # Cấu hình cho PostgreSQL và Ollama
-├── docs/                     # Tài liệu dự án
-├── src/
-│   ├── analysis/             # Lõi AI: module tạo index CV và phân tích
-│   ├── database/             # Module kết nối và truy vấn DB
-│   ├── job_crawler/          # Dự án Scrapy để thu thập dữ liệu
-│   ├── notification/         # Module gửi email thông báo
-│   └── main.py               # Điểm vào chính, điều phối toàn bộ pipeline
-├── .env                      # File chứa các biến môi trường (cần tạo)
-└── README.md
+```text
+src/
+├── main.py                 # CLI: --crawl / --analyze / --notify
+├── analysis/
+│   ├── analyzer.py         # So khớp CV ↔ JD (Ollama JSON)
+│   ├── cv_indexer.py       # Index CV PDF (HuggingFace embed)
+│   └── run_analysis.py     # Batch analyze từ DB
+├── core/
+│   └── config.py           # Đọc .env
+├── database/
+│   ├── connection.py       # asyncpg pool
+│   └── queries.py
+├── notification/
+│   ├── email_notifier.py
+│   └── run_notify.py
+└── job_crawler/
+    ├── scrapy.cfg
+    ├── sites_config.json
+    ├── topcv_locations.json
+    └── job_crawler/
+        ├── spiders/generic_job_spider.py
+        ├── items.py
+        ├── pipelines.py
+        └── settings.py
+cv_data/                    # Đặt file CV .pdf tại đây
+docker-compose.yml
+Dockerfile
+requirements.txt
+.env.example
 ```
 
-## 4. Hướng dẫn cài đặt & Cấu hình (Setup)
+## Yêu cầu
 
-### Bước 1: Chuẩn bị môi trường
+- Docker + Docker Compose
+- (Local không Docker) Python 3.11+, Ollama, PostgreSQL
 
-1.  **Clone ays án:**
-    ```bash
-    git clone <repository_url>
-    cd <repository_folder>
-    ```
+## Chạy bằng Docker (khuyến nghị)
 
-2.  **Tạo file `.env`:**
-    Tạo một file tên là `.env` ở thư mục gốc và sao chép nội dung từ file `.env.example` (nếu có) hoặc điền các thông tin sau. Đây là nơi chứa tất cả các cấu hình nhạy cảm.
+### 1. Chuẩn bị
 
-    ```ini
-    # --- Cấu hình PostgreSQL (từ docker-compose.yml) ---
-    POSTGRES_DB=job_search
-    POSTGRES_USER=user
-    POSTGRES_PASSWORD=password
-    POSTGRES_HOST=localhost
-    POSTGRES_PORT=5432
+```bash
+cp .env.example .env
+# Sửa EMAIL_* / mật khẩu DB nếu cần
 
-    # --- Cấu hình SMTP để gửi email ---
-    # Ví dụ sử dụng Gmail
-    SMTP_HOST=smtp.gmail.com
-    SMTP_PORT=587
-    SMTP_USER=your_email@gmail.com
-    SMTP_PASSWORD=your_gmail_app_password  # Mật khẩu ứng dụng của Gmail
-    EMAIL_SENDER=your_email@gmail.com
-    EMAIL_RECIPIENT=email_to_receive_report@example.com
-    ```
-    > **Lưu ý:** Để dùng Gmail, bạn cần tạo một "Mật khẩu ứng dụng". Xem hướng dẫn [tại đây](https://support.google.com/accounts/answer/185833).
+mkdir -p cv_data logs
+# Copy CV của bạn:
+cp /path/to/your_cv.pdf cv_data/
+```
 
-3.  **Chạy các dịch vụ nền (PostgreSQL & Ollama):**
-    Yêu cầu đã cài đặt Docker và Docker Compose.
-    ```bash
-    docker-compose up -d
-    ```
+### 2. Build & khởi động
 
-### Bước 2: Cài đặt Dependencies
+```bash
+docker compose up -d --build
+```
 
-1.  **Cài đặt `uv`:**
-    Nếu chưa có, hãy cài `uv` theo [hướng dẫn chính thức](https://github.com/astral-sh/uv).
+Services:
 
-2.  **Cài đặt các gói Python:**
-    `uv` sẽ tự động tạo môi trường ảo và cài đặt các gói từ `pyproject.toml`.
-    ```bash
-    uv pip install -r requirements.txt
-    ```
-    (Nếu `pyproject.toml` đã được cấu hình đúng, bạn chỉ cần chạy `uv pip sync`)
+| Service | Vai trò | Port |
+|---------|---------|------|
+| `postgres` | Database | 5432 |
+| `ollama` | LLM local | 11434 |
+| `ollama-init` | Pull model 1 lần rồi thoát | — |
+| `app` | Code pipeline (sleep, dùng `exec`) | — |
 
-### Bước 3: Cấu hình AI và CV
+Đợi Ollama pull xong (`phi3:mini` lần đầu có thể vài phút):
 
-1.  **Tải model AI:**
-    Chạy lệnh sau để Ollama tải và phục vụ model `phi3:mini`.
-    ```bash
-    ollama run phi3:mini
-    ```
-    Chờ đến khi model được tải xong và bạn thấy prompt `>>>`.
+```bash
+docker compose logs -f ollama-init
+```
 
-2.  **Thêm CV của bạn:**
-    Đặt file CV của bạn (định dạng **.pdf**) vào thư mục `cv_data/`. Pipeline sẽ tự động tìm và sử dụng file PDF đầu tiên nó thấy trong thư mục này.
+### 3. Chạy pipeline
 
-## 5. Chạy Pipeline (Usage)
+`Dockerfile` đặt:
 
-Sử dụng `src/main.py` làm điểm vào chính. Bạn có thể chạy các phần của pipeline một cách độc lập hoặc chạy toàn bộ.
+```dockerfile
+ENTRYPOINT ["python", "-m", "src.main"]
+```
 
--   **Chạy toàn bộ pipeline (Crawl -> Analyze -> Report):**
-    Đây là lệnh phổ biến nhất để chạy hàng ngày.
-    ```bash
-    uv run python src/main.py --full-run
-    ```
+→ mọi arg sau image/service được truyền thẳng vào `src.main`.
 
--   **Chỉ thu thập dữ liệu (Crawl):**
-    ```bash
-    uv run python src/main.py --crawl
-    ```
+**Cách A — `docker compose exec` (container `app` đang sleep)**
 
--   **Chỉ phân tích bằng AI (Analyze):**
-    Chạy phân tích trên các job đã crawl nhưng chưa được xử lý.
-    ```bash
-    uv run python src/main.py --analyze
-    ```
+```bash
+docker compose exec app python -m src.main --crawl \
+  -a site_name=topcv -a keyword=ai-engineer -a location=ha-noi -a exp=1,2,3
 
--   **Chỉ gửi báo cáo (Report):**
-    Gửi email báo cáo các job đã được phân tích trong ngày.
-    ```bash
-    uv run python src/main.py --report
-    ```
+docker compose exec app python -m src.main --analyze --limit 10
 
-## 6. Lập lịch chạy hàng ngày (Automation)
+docker compose exec app python -m src.main --notify --min-score 70
 
-Để tự động hóa hoàn toàn, bạn có thể sử dụng bộ lập lịch của hệ điều hành để chạy lệnh `--full-run` mỗi ngày.
+# Full pipeline một lệnh
+docker compose exec app python -m src.main --crawl --analyze --notify \
+  -a site_name=topcv -a keyword=ai-engineer -a location=ha-noi -a exp=1,2,3
+```
 
-### Trên Linux/macOS (sử dụng `cron`)
+**Cách B — one-shot service `pipeline` (dùng ENTRYPOINT, không cần exec)**
 
-1.  Mở crontab để chỉnh sửa: `crontab -e`
-2.  Thêm dòng sau để chạy pipeline vào 7 giờ sáng mỗi ngày. Thay `/path/to/your/project` bằng đường dẫn tuyệt đối đến thư mục dự án của bạn.
+```bash
+docker compose run --rm pipeline --crawl --analyze --notify \
+  -a site_name=topcv -a keyword=ai-engineer -a location=ha-noi -a exp=1,2,3
 
-    ```cron
-    # Chạy AI Job Search pipeline mỗi 7h sáng
-    0 7 * * * cd /path/to/your/project && /path/to/your/uv run python src/main.py --full-run >> /path/to/your/project/cron.log 2>&1
-    ```
-    > **Lưu ý:** Bạn cần cung cấp đường dẫn đầy đủ đến `uv` nếu nó không nằm trong PATH của cron.
+docker compose run --rm pipeline --analyze --limit 5
+docker compose run --rm pipeline --notify --dry-run
+```
 
-### Trên Windows (sử dụng `Task Scheduler`)
+**Cách C — `docker compose run app` + override entrypoint**
 
-1.  Mở **Task Scheduler**.
-2.  Nhấn **Create Basic Task...**
-3.  **Name:** Đặt tên là "AI Job Search Daily Run".
-4.  **Trigger:** Chọn "Daily" và đặt thời gian bạn muốn chạy (ví dụ: 7:00:00 AM).
-5.  **Action:** Chọn "Start a program".
-6.  **Program/script:** Điền đường dẫn tuyệt đối đến `uv.exe`.
-7.  **Add arguments (optional):**
-    ```
-    run python src/main.py --full-run
-    ```
-8.  **Start in (optional):** Điền đường dẫn tuyệt đối đến thư mục dự án của bạn.
-9.  Hoàn tất và lưu lại.
+```bash
+docker compose run --rm --entrypoint python app -m src.main --analyze --limit 3
+```
 
----
-Chúc may mắn trong hành trình tìm việc!
+### 4. Dừng / xoá
+
+```bash
+docker compose down          # giữ volume (DB, model, index)
+docker compose down -v       # XOÁ luôn data
+```
+
+## Chạy local (không Docker)
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+source .venv/bin/activate
+
+pip install -r requirements.txt
+playwright install chromium
+
+# Ollama
+ollama pull phi3:mini
+
+# Postgres qua docker thôi cũng được:
+docker compose up -d postgres
+
+cp .env.example .env
+# POSTGRES_HOST=localhost , OLLAMA_HOST=http://localhost:11434
+
+python -m src.main --crawl -a site_name=topcv -a keyword=ai-engineer -a location=ha-noi -a exp=1
+python -m src.main --analyze --limit 5
+python -m src.notification.run_notify --dry-run
+```
+
+## Biến môi trường quan trọng
+
+| Biến | Mô tả | Mặc định |
+|------|--------|----------|
+| `POSTGRES_*` | Kết nối DB | xem `.env.example` |
+| `OLLAMA_HOST` | URL Ollama | `http://ollama:11434` |
+| `OLLAMA_LLM_MODEL` | Model chat | `phi3:mini` |
+| `OLLAMA_NUM_CTX` | Context tokens | `4096` |
+| `HF_EMBED_MODEL` | Embedding HF | `paraphrase-multilingual-MiniLM-L12-v2` |
+| `NOTIFY_MIN_SCORE` | Ngưỡng gửi mail | `70` |
+| `EMAIL_*` / `SMTP_*` | SMTP | — |
+
+## Lưu ý vận hành
+
+### Crawl TopCV & HTTP 429
+
+Site giới hạn tốc độ. Trong `settings.py` nên giữ:
+
+- `CONCURRENT_REQUESTS = 1`
+- `DOWNLOAD_DELAY ≈ 1.5–3`
+- AutoThrottle bật
+
+### Phân tích nhiều job / OOM
+
+- Chạy theo lô: `--limit 20`, lặp lại (job đã có `ai_analysis` sẽ bỏ qua)
+- `run_analysis` dừng sớm sau N lỗi liên tiếp (Ollama chết)
+- Model nhỏ (`phi3:mini`, `qwen2.5:0.5b`) phù hợp máy RAM vừa; model lớn cần GPU hoặc RAM cao
+
+### Email Gmail
+
+Dùng **App Password** (bật 2FA), không dùng mật khẩu đăng nhập thường.
+
+### Playwright trong Docker
+
+Image đã cài Chromium headless. Không cần `xvfb` nếu spider chạy headed=False.
+
+## Kiểm tra DB nhanh
+
+```bash
+docker compose exec postgres psql -U jobuser -d job_search -c \
+  "SELECT job_title, match_score FROM job_listings ORDER BY match_score DESC NULLS LAST LIMIT 10;"
+```
+
+## Troubleshooting
+
+| Lỗi | Hướng xử lý |
+|-----|-------------|
+| `column ... does not exist` | Cập nhật `queries.py` / chạy lại migrate ALTER |
+| Ollama OOM / 500 | Giảm `OLLAMA_NUM_CTX`, model nhẹ hơn, `--limit` |
+| Không parse JSON | Đã dùng `format=json`; kiểm tra log raw response |
+| Embedding đòi OpenAI | Dùng `cv_indexer` HuggingFace, không set OpenAI key |
+| Scrapy “no active project” | Chạy từ thư mục có `scrapy.cfg` hoặc qua `src.main --crawl` |
+| Email auth fail | App Password + đúng `EMAIL_USER`/`EMAIL_SENDER` |
+
+## License
+
+Dự án cá nhân / học tập. Tôn trọng ToS của các trang tuyển dụng khi crawl.
