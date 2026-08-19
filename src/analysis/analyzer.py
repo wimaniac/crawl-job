@@ -1,141 +1,216 @@
-import logging
+# src/analysis/analyzer.py
+"""Phân tích JD so với CV bằng LLM local (Ollama).
+
+Không dùng query_engine text_qa (phi3 hay echo lại JD).
+Luồng: retrieve chunk CV → llm.complete + format=json → parse.
+"""
+from __future__ import annotations
+
 import json
-from llama_index.core import VectorStoreIndex, get_settings
-from llama_index.core.prompts import PromptTemplate
+import logging
+import os
+import re
+
+from llama_index.core import VectorStoreIndex
 from llama_index.llms.ollama import Ollama
+
 from .cv_indexer import get_cv_index
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Cấu hình mô hình và prompt ---
-LLM_MODEL = "phi3:mini" # Sử dụng phi3:mini, một model nhỏ gọn và hiệu quả
-JSON_ANALYSIS_PROMPT = PromptTemplate("""
-Dựa trên CV được cung cấp, hãy phân tích Mô tả công việc (Job Description) sau đây.
-Đưa ra một câu trả lời dưới dạng một JSON object DUY NHẤT, không có bất kỳ giải thích hay văn bản nào khác.
-JSON object phải có cấu trúc như sau:
-{{
-    "match_score": <một số nguyên từ 0 đến 100, thể hiện mức độ phù hợp của CV với công việc>,
-    "ai_analysis": "<một chuỗi tóm tắt ngắn gọn (2-3 câu) về lý do phù hợp hoặc không phù hợp, nhấn mạnh vào các kỹ năng hoặc kinh nghiệm chính>"
-}}
+LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "phi3:mini")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
+NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "200"))
+MAX_JD_CHARS = int(os.getenv("MAX_JD_CHARS", "2500"))
+MAX_CV_CHARS = int(os.getenv("MAX_CV_CHARS", "2500"))
+SIMILARITY_TOP_K = int(os.getenv("SIMILARITY_TOP_K", "3"))
 
-Đây là các thông tin liên quan từ CV của ứng viên:
----------------------
-{context_str}
----------------------
+SYSTEM_HINT = (
+    "Bạn là hệ thống chấm điểm CV. Chỉ trả JSON. "
+    "Không viết giải thích ngoài JSON."
+)
 
-Đây là Mô tả công việc cần phân tích:
----------------------
-{query_str}
----------------------
+PROMPT_TEMPLATE = """So sánh CV với tin tuyển dụng. Chấm điểm thực tế.
 
-Hãy tạo JSON object:
-""")
+Thang điểm:
+- 0-30: không liên quan / thiếu hầu hết yêu cầu
+- 31-50: liên quan yếu
+- 51-70: khá phù hợp, còn thiếu vài yêu cầu
+- 71-85: phù hợp tốt
+- 86-100: rất khớp (chỉ khi gần như đủ mọi yêu cầu chính)
+
+Yêu cầu output (JSON thuần, không markdown):
+{{"match_score": <0-100>, "ai_analysis": "<1-2 câu tiếng Việt: 1 điểm mạnh + 1 điểm thiếu>"}}
+
+### CV
+{cv_context}
+
+### Tin tuyển dụng
+{job_text}
+"""
+
 
 def setup_llm_and_query_engine(cv_index: VectorStoreIndex):
     """
-    Cấu hình LLM và tạo một query engine từ CV index.
+    Trả về dict chứa llm + retriever (tương thích run_analysis cũ
+    gọi setup_llm_and_query_engine rồi analyze_job_description(engine, ...)).
     """
-    # Cấu hình để LlamaIndex sử dụng model Ollama local
-    # Model 'phi3:mini' được khuyến nghị vì nhỏ gọn và hiệu quả cho tác vụ này
-    settings_llm = Ollama(model=LLM_MODEL, request_timeout=120.0)
-    
-    # Thiết lập LLM cho toàn bộ LlamaIndex context
-    # (Mặc dù chúng ta sẽ truyền nó trực tiếp vào query engine)
-    get_settings().llm = settings_llm
-
-    # Tạo một query engine với prompt template đã tùy chỉnh
-    # 'response_mode="compact"' giúp model trả lời ngắn gọn hơn
-    query_engine = cv_index.as_query_engine(
-        text_qa_template=JSON_ANALYSIS_PROMPT,
-        response_mode="compact",
-        llm=settings_llm, 
+    llm = Ollama(
+        model=LLM_MODEL,
+        base_url=OLLAMA_HOST,
+        request_timeout=180.0,
+        context_window=NUM_CTX,
+        temperature=0.1,
+        # Ép Ollama trả JSON hợp lệ
+        additional_kwargs={
+            "num_ctx": NUM_CTX,
+            "num_predict": NUM_PREDICT,
+            "temperature": 0.1,
+            "format": "json",
+        },
     )
-    return query_engine
+    retriever = cv_index.as_retriever(similarity_top_k=SIMILARITY_TOP_K)
+    return {"llm": llm, "retriever": retriever, "index": cv_index}
 
-def analyze_job_description(query_engine, job_description: str) -> dict | None:
-    """
-    Sử dụng query engine để phân tích một mô tả công việc.
-    
-    Args:
-        query_engine: Query engine đã được cấu hình.
-        job_description: Chuỗi mô tả công việc cần phân tích.
 
-    Returns:
-        Một dictionary chứa 'match_score' và 'ai_analysis', hoặc None nếu có lỗi.
-    """
-    logging.info("Bắt đầu phân tích mô tả công việc...")
-    
+def compose_job_text(job: dict) -> str:
+    parts = []
+    title = job.get("job_title") or ""
+    company = job.get("company_name") or ""
+    if title or company:
+        parts.append(f"Vị trí: {title} | Công ty: {company}")
+    if job.get("location"):
+        parts.append(f"Địa điểm: {job['location']}")
+    if job.get("salary_range"):
+        parts.append(f"Mức lương: {job['salary_range']}")
+    if job.get("experience"):
+        parts.append(f"Kinh nghiệm yêu cầu: {job['experience']}")
+    if job.get("job_requirements"):
+        parts.append(f"Yêu cầu:\n{job['job_requirements']}")
+    if job.get("job_description"):
+        parts.append(f"Mô tả:\n{job['job_description']}")
+    if job.get("job_benefits"):
+        ben = str(job["job_benefits"])
+        if len(ben) > 300:
+            ben = ben[:300] + "..."
+        parts.append(f"Quyền lợi:\n{ben}")
+    text = "\n\n".join(parts).strip()
+    if len(text) > MAX_JD_CHARS:
+        text = text[:MAX_JD_CHARS] + "\n...(cắt)"
+    return text
+
+
+def _retrieve_cv_context(engine, job_text: str) -> str:
+    retriever = engine["retriever"]
+    nodes = retriever.retrieve(job_text)
+    chunks = []
+    for n in nodes:
+        content = n.get_content() if hasattr(n, "get_content") else str(n)
+        chunks.append(content.strip())
+    text = "\n---\n".join(chunks)
+    if len(text) > MAX_CV_CHARS:
+        text = text[:MAX_CV_CHARS] + "\n...(cắt)"
+    return text or "(Không lấy được đoạn CV liên quan.)"
+
+
+def _clean_analysis(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"```(?:json)?|```", "", text)
+    text = re.sub(
+        r"(trả lời đúng|không markdown|match_score|ai_analysis\s*:)",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\s{2,}", " ", text).strip(" -:\n\"'")
+    if len(text) > 280:
+        text = text[:277] + "..."
+    return text
+
+
+def _extract_json(text: str) -> dict | None:
+    text = (text or "").strip()
+    if not text:
+        return None
+    # Bỏ markdown fence nếu còn
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
     try:
-        response = query_engine.query(job_description)
-        response_text = str(response).strip()
-        
-        # Đôi khi model vẫn trả về markdown ```json ... ```, cần làm sạch
-        if response_text.startswith("```json"):
-            response_text = response_text[7:-3].strip()
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    score_m = re.search(r'"match_score"\s*:\s*(\d+)', text)
+    if score_m:
+        analysis_m = re.search(r'"ai_analysis"\s*:\s*"((?:\\.|[^"\\])*)"', text)
+        analysis = analysis_m.group(1) if analysis_m else ""
+        return {"match_score": int(score_m.group(1)), "ai_analysis": analysis}
+    return None
 
-        # Phân tích chuỗi JSON trả về
-        result = json.loads(response_text)
 
-        # Kiểm tra cấu trúc của JSON
-        if "match_score" in result and "ai_analysis" in result:
-            logging.info(f"Phân tích thành công. Điểm phù hợp: {result['match_score']}")
-            return result
+def analyze_job_description(engine, job_text: str) -> dict | None:
+    """
+    engine: object từ setup_llm_and_query_engine (dict llm+retriever)
+            hoặc legacy query_engine (có .query) — fallback.
+    """
+    if not job_text or len(job_text) < 40:
+        logging.warning("JD quá ngắn — bỏ qua.")
+        return None
+
+    try:
+        # --- Luồng mới: retrieve + complete JSON ---
+        if isinstance(engine, dict) and "llm" in engine:
+            cv_context = _retrieve_cv_context(engine, job_text)
+            prompt = PROMPT_TEMPLATE.format(
+                cv_context=cv_context,
+                job_text=job_text,
+            )
+            # Một số bản llama-index Ollama dùng .complete
+            raw = engine["llm"].complete(prompt)
+            response_text = str(raw).strip()
         else:
-            logging.error(f"Lỗi: JSON trả về không đúng cấu trúc. Response: {response_text}")
+            # Fallback legacy query_engine
+            response_text = str(engine.query(job_text)).strip()
+
+        result = _extract_json(response_text)
+        if not result:
+            logging.error(f"Không parse được JSON: {response_text[:250]}")
             return None
 
-    except json.JSONDecodeError:
-        logging.error(f"Lỗi giải mã JSON. Model có thể đã không trả về JSON hợp lệ. Response: {response_text}")
-        return None
+        if "match_score" not in result:
+            logging.error(f"JSON thiếu match_score: {result}")
+            return None
+
+        score = max(0, min(100, int(result["match_score"])))
+        analysis = _clean_analysis(str(result.get("ai_analysis", "")))
+        if not analysis:
+            analysis = "Không có nhận xét chi tiết."
+
+        logging.info(f"Phân tích OK — score={score}")
+        return {"match_score": score, "ai_analysis": analysis}
+
     except Exception as e:
-        logging.error(f"Lỗi không xác định trong quá trình phân tích: {e}")
+        logging.error(f"Lỗi phân tích: {e}")
         return None
 
-if __name__ == '__main__':
-    # --- Dành cho việc chạy thử nghiệm ---
-    print("Bắt đầu chạy thử nghiệm module `analyzer`...")
 
-    try:
-        # 1. Lấy CV index
-        print("\n--- Bước 1: Tải/Tạo CV Index ---")
-        cv_index = get_cv_index()
-        print("Tải CV Index thành công.")
-
-        # 2. Cấu hình Query Engine
-        print("\n--- Bước 2: Cấu hình LLM và Query Engine ---")
-        # Đảm bảo bạn đã cài đặt và chạy Ollama với model 'phi3:mini'
-        # Lệnh để chạy: `ollama run phi3:mini`
-        try:
-            query_engine = setup_llm_and_query_engine(cv_index)
-            print("Cấu hình Query Engine thành công.")
-        except Exception as e:
-            print(f"\nLỖI: Không thể kết nối đến Ollama hoặc cấu hình LLM.")
-            print("Hãy đảm bảo bạn đã cài đặt Ollama và chạy lệnh: `ollama run phi3:mini`")
-            print(f"Chi tiết lỗi: {e}")
-            exit()
-            
-        # 3. Phân tích một JD mẫu
-        print("\n--- Bước 3: Phân tích một Job Description mẫu ---")
-        sample_jd = """
-        **Senior Python Developer (ETL & Data Pipelines)**
-        - Yêu cầu 5 năm kinh nghiệm với Python.
-        - Có kinh nghiệm sâu sắc trong việc xây dựng các hệ thống ETL, xử lý dữ liệu lớn.
-        - Thành thạo các framework như Django, FastAPI.
-        - Biết sử dụng Scrapy là một lợi thế lớn.
-        - Kỹ năng làm việc với PostgreSQL và các cơ sở dữ liệu quan hệ.
-        """
-        
-        analysis_result = analyze_job_description(query_engine, sample_jd)
-
-        if analysis_result:
-            print("\nKết quả phân tích:")
-            print(json.dumps(analysis_result, indent=2, ensure_ascii=False))
-        else:
-            print("\nKhông nhận được kết quả phân tích hợp lệ.")
-
-    except FileNotFoundError as e:
-        print(f"\nLỖI: {e}")
-    except Exception as e:
-        print(f"\nĐã xảy ra lỗi không mong muốn: {e}")
-
-    print("\nThử nghiệm module `analyzer` hoàn tất!")
+if __name__ == "__main__":
+    index = get_cv_index()
+    engine = setup_llm_and_query_engine(index)
+    sample = {
+        "job_title": "Python Developer",
+        "company_name": "Demo",
+        "job_description": "Xây dựng API FastAPI, ETL, Scrapy, PostgreSQL.",
+        "job_requirements": "3 năm Python, biết Scrapy là lợi thế.",
+        "job_benefits": "Lương thỏa thuận",
+    }
+    print(analyze_job_description(engine, compose_job_text(sample)))

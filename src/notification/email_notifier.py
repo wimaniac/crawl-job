@@ -1,4 +1,5 @@
 # src/notification/email_notifier.py
+import html
 import os
 import smtplib
 import logging
@@ -8,6 +9,12 @@ from datetime import datetime
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def _esc(value) -> str:
+    """Escape HTML an toàn cho dữ liệu lấy từ crawl (có thể chứa <, >, &...)."""
+    return html.escape(str(value)) if value is not None else ""
+
 
 def format_jobs_to_html(jobs: list) -> str:
     """
@@ -38,17 +45,27 @@ def format_jobs_to_html(jobs: list) -> str:
     html_content += f'<div class="header"><h1>Báo cáo việc làm ngày {datetime.now().strftime("%d-%m-%Y")}</h1></div>'
 
     for job in jobs:
+        # .get() an toàn — job thiếu field (NULL trong DB) không làm crash;
+        # escape mọi giá trị lấy từ crawl để tránh vỡ layout / HTML injection.
+        job_url = _esc(job.get("job_url") or "#")
+        job_title = _esc(job.get("job_title") or "(Không có tiêu đề)")
+        company_name = _esc(job.get("company_name") or "N/A")
+        location = _esc(job.get("location") or "N/A")
+        salary_range = _esc(job.get("salary_range") or "N/A")
+        match_score = _esc(job.get("match_score") if job.get("match_score") is not None else "N/A")
+        ai_analysis = _esc(job.get("ai_analysis") or "Chưa có phân tích.")
+
         html_content += f"""
         <div class="job">
-            <h2><a href="{job['job_url']}">{job['job_title']}</a></h2>
+            <h2><a href="{job_url}">{job_title}</a></h2>
             <div class="job-meta">
-                <span><strong>Công ty:</strong> {job['company_name']}</span><br>
-                <span><strong>Địa điểm:</strong> {job['location']}</span><br>
-                <span><strong>Lương:</strong> {job['salary_range']}</span>
+                <span><strong>Công ty:</strong> {company_name}</span><br>
+                <span><strong>Địa điểm:</strong> {location}</span><br>
+                <span><strong>Lương:</strong> {salary_range}</span>
             </div>
             <div class="job-analysis">
-                <p><strong>Đánh giá của AI:</strong> <span class="score">Điểm phù hợp: {job['match_score']}/100</span></p>
-                <p>{job['ai_analysis']}</p>
+                <p><strong>Đánh giá của AI:</strong> <span class="score">Điểm phù hợp: {match_score}/100</span></p>
+                <p>{ai_analysis}</p>
             </div>
         </div>
         """
@@ -58,24 +75,28 @@ def format_jobs_to_html(jobs: list) -> str:
     
     return html_content
 
-def send_email(subject: str, html_content: str):
+def send_email(subject: str, html_content: str) -> bool:
     """
     Gửi email sử dụng các cấu hình từ biến môi trường.
+    Trả về True nếu gửi thành công, False nếu thất bại — QUAN TRỌNG: caller
+    (vd run_notify.py) cần biết chắc để quyết định có đánh dấu job "đã gửi"
+    hay không. Nếu gửi lỗi mà vẫn đánh dấu đã gửi, job đó sẽ "biến mất"
+    khỏi các lần gửi sau dù người dùng chưa từng nhận được.
     """
-    # Lấy cấu hình từ .env
+    # Lấy cấu hình từ .env. Ưu tiên SMTP_* nếu có, fallback về EMAIL_* để tương thích ngược.
     sender_email = os.getenv("EMAIL_SENDER")
     receiver_email = os.getenv("EMAIL_RECIPIENT")
-    smtp_server = os.getenv("SMTP_HOST")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_server = os.getenv("SMTP_HOST") or os.getenv("EMAIL_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT") or os.getenv("EMAIL_PORT") or 587)
+    smtp_user = os.getenv("SMTP_USER") or os.getenv("EMAIL_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD") or os.getenv("EMAIL_PASSWORD")
 
     # Kiểm tra các biến môi trường cần thiết
     required_vars = [sender_email, receiver_email, smtp_server, smtp_port, smtp_user, smtp_password]
     if not all(required_vars):
         logging.error("Thiếu thông tin cấu hình SMTP trong file .env. Không thể gửi email.")
         logging.error(f"Kiểm tra các biến: EMAIL_SENDER, EMAIL_RECIPIENT, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD")
-        return
+        return False
 
     # Tạo đối tượng email
     message = MIMEMultipart("alternative")
@@ -96,16 +117,33 @@ def send_email(subject: str, html_content: str):
             logging.info(f"Đang gửi email đến {receiver_email}...")
             server.sendmail(sender_email, receiver_email, message.as_string())
             logging.info("Email đã được gửi thành công!")
-    except smtplib.SMTPAuthenticationError:
-        logging.error("Lỗi xác thực SMTP. Kiểm tra lại SMTP_USER và SMTP_PASSWORD.")
+            return True
+    except smtplib.SMTPAuthenticationError as e:
+        smtp_code = getattr(e, "smtp_code", "?")
+        smtp_error = getattr(e, "smtp_error", b"")
+        if isinstance(smtp_error, bytes):
+            smtp_error = smtp_error.decode("utf-8", errors="replace")
+        logging.error(f"Lỗi xác thực SMTP (code={smtp_code}): {smtp_error}")
+        logging.error(
+            "Với Gmail: từ ~2022 KHÔNG dùng được mật khẩu đăng nhập thường "
+            "cho SMTP nữa, kể cả đúng mật khẩu vẫn bị từ chối. Cần: "
+            "(1) bật 2-Step Verification cho tài khoản Google, "
+            "(2) tạo 'Mật khẩu ứng dụng' (App Password) tại "
+            "https://myaccount.google.com/apppasswords, dùng chuỗi 16 ký tự "
+            "đó làm EMAIL_PASSWORD — không phải mật khẩu Gmail thường. "
+            "(3) EMAIL_USER phải trùng khớp EMAIL_SENDER (cùng 1 địa chỉ)."
+        )
+        return False
     except Exception as e:
         logging.error(f"Đã xảy ra lỗi khi gửi email: {e}")
+        return False
 
 if __name__ == '__main__':
     # --- Dành cho việc chạy thử nghiệm ---
     # Cần tạo file .env ở thư mục gốc và điền các biến SMTP
+    from pathlib import Path
     from dotenv import load_dotenv
-    PROJECT_ROOT = Path(__file__).parent.parent.parent
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     load_dotenv(PROJECT_ROOT / ".env")
 
     print("Bắt đầu chạy thử nghiệm module `email_notifier`...")

@@ -5,7 +5,7 @@
       "start_url_template": "https://www.topcv.vn/tim-viec-lam{keyword_path}",
       "default_keyword": "",
       "needs_playwright_list": true,
-      "needs_playwright_detail": true,
+      "needs_playwright_detail": false,
       "use_side_panel": false,
       "list_item_selector": "div.job-item-search-result",
       "list_title_selector": "h3.title a, h3.title",

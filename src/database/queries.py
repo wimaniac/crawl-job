@@ -1,13 +1,11 @@
-# src/database/queries.py
 import logging
 from .connection import DatabaseConnection
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 
 async def initialize_database():
-    """
-    Khởi tạo cơ sở dữ liệu: tạo bảng `job_listings` nếu nó chưa tồn tại.
-    """
+    """Tạo bảng job_listings nếu chưa có + ALTER cột mới an toàn."""
     create_table_query = """
     CREATE TABLE IF NOT EXISTS job_listings (
         id SERIAL PRIMARY KEY,
@@ -15,39 +13,62 @@ async def initialize_database():
         company_name TEXT,
         location TEXT,
         salary_range TEXT,
+        experience TEXT,
         job_url TEXT UNIQUE,
-        job_description_raw TEXT,
+        job_description TEXT,
+        job_requirements TEXT,
+        job_benefits TEXT,
         match_score INTEGER,
         ai_analysis TEXT,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
     """
+    alters = [
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS experience TEXT",
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_description TEXT",
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_requirements TEXT",
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS job_benefits TEXT",
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS match_score INTEGER",
+        "ALTER TABLE job_listings ADD COLUMN IF NOT EXISTS ai_analysis TEXT",
+    ]
     try:
         async with DatabaseConnection() as conn:
             await conn.execute(create_table_query)
-        logging.info("Bảng 'job_listings' đã được kiểm tra và sẵn sàng.")
+            for stmt in alters:
+                await conn.execute(stmt)
+        logging.info("Bảng 'job_listings' đã sẵn sàng.")
     except Exception as e:
         logging.error(f"Lỗi khi khởi tạo bảng 'job_listings': {e}")
         raise
 
-async def get_unanalyzed_jobs():
+
+async def get_unanalyzed_jobs(limit: int | None = None):
+    """Lấy job chưa có ai_analysis và còn nội dung mô tả."""
+    query = """
+    SELECT id, job_title, company_name, location, salary_range, experience,
+           job_description, job_requirements, job_benefits, job_url
+    FROM job_listings
+    WHERE ai_analysis IS NULL
+      AND (
+            COALESCE(job_description, '') <> ''
+         OR COALESCE(job_requirements, '') <> ''
+         OR COALESCE(job_benefits, '') <> ''
+      )
+    ORDER BY id
     """
-    Truy vấn và trả về danh sách các công việc chưa được AI phân tích.
-    """
-    query = "SELECT id, job_description_raw FROM job_listings WHERE ai_analysis IS NULL;"
+    if limit and limit > 0:
+        query += f" LIMIT {int(limit)}"
     try:
         async with DatabaseConnection() as conn:
             records = await conn.fetch(query)
-            logging.info(f"Tìm thấy {len(records)} công việc chưa được phân tích.")
+            logging.info(f"Tìm thấy {len(records)} công việc chưa phân tích.")
             return records
     except Exception as e:
-        logging.error(f"Lỗi khi lấy các công việc chưa được phân tích: {e}")
+        logging.error(f"Lỗi get_unanalyzed_jobs: {e}")
         return []
 
+
 async def update_job_with_analysis(job_id: int, match_score: int, ai_analysis: str):
-    """
-    Cập nhật một tin tuyển dụng với kết quả phân tích của AI.
-    """
     query = """
     UPDATE job_listings
     SET match_score = $1, ai_analysis = $2
@@ -56,23 +77,15 @@ async def update_job_with_analysis(job_id: int, match_score: int, ai_analysis: s
     try:
         async with DatabaseConnection() as conn:
             await conn.execute(query, match_score, ai_analysis, job_id)
-            logging.info(f"Đã cập nhật kết quả phân tích cho job ID {job_id}.")
+            logging.info(f"Đã cập nhật phân tích job id={job_id} score={match_score}")
     except Exception as e:
-        logging.error(f"Lỗi khi cập nhật job ID {job_id}: {e}")
+        logging.error(f"Lỗi update job id={job_id}: {e}")
 
-async def get_best_matching_jobs(score_threshold: int = 70, days_limit: int = 1):
-    """
-    Lấy các công việc phù hợp nhất dựa trên điểm số và ngày tạo.
 
-    Args:
-        score_threshold (int): Ngưỡng điểm tối thiểu để một công việc được xem là phù hợp.
-        days_limit (int): Giới hạn số ngày trở lại để tìm kiếm công việc.
-
-    Returns:
-        Một danh sách các record công việc phù hợp nhất.
-    """
+async def get_best_matching_jobs(score_threshold: int = 70, days_limit: int = 7):
     query = """
-    SELECT job_title, company_name, location, salary_range, job_url, match_score, ai_analysis
+    SELECT job_title, company_name, location, salary_range, job_url,
+           match_score, ai_analysis, created_at
     FROM job_listings
     WHERE match_score >= $1
       AND created_at >= NOW() - ($2 * INTERVAL '1 day')
@@ -81,13 +94,11 @@ async def get_best_matching_jobs(score_threshold: int = 70, days_limit: int = 1)
     try:
         async with DatabaseConnection() as conn:
             records = await conn.fetch(query, score_threshold, days_limit)
-            logging.info(f"Tìm thấy {len(records)} công việc phù hợp (điểm >= {score_threshold}) trong {days_limit} ngày qua.")
+            logging.info(
+                f"Tìm thấy {len(records)} job phù hợp "
+                f"(score>={score_threshold}, {days_limit} ngày)."
+            )
             return records
     except Exception as e:
-        logging.error(f"Lỗi khi lấy các công việc phù hợp nhất: {e}")
+        logging.error(f"Lỗi get_best_matching_jobs: {e}")
         return []
-
-# Các hàm khác để tương tác với DB sẽ được thêm vào đây
-# Ví dụ: hàm thêm một tin tuyển dụng mới
-# async def add_job_listing(job_data):
-#     ...

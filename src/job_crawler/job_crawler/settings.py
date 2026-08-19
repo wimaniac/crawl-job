@@ -109,11 +109,9 @@ PLAYWRIGHT_ABORT_REQUEST_MIME_TYPES = [
 # lưu (persist) ra đĩa trừ khi bạn tự chỉ định user_data_dir.
 
 
-# -- Tối ưu hiệu suất và tài nguyên theo kế hoạch --
-
-# List+detail mode: 3 tab song song ổn trên máy 16GB
-CONCURRENT_REQUESTS = 1
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
+# -- Tối ưu hiệu suất--
+CONCURRENT_REQUESTS = 2
+CONCURRENT_REQUESTS_PER_DOMAIN = 2
 
 # Tự động điều chỉnh tốc độ crawl để tránh làm quá tải server
 AUTOTHROTTLE_ENABLED = True
@@ -153,7 +151,7 @@ ITEM_PIPELINES = {
 
 # Add some randomness to download delays
 RANDOMIZE_DOWNLOAD_DELAY = True
-DOWNLOAD_DELAY = 2.0
+DOWNLOAD_DELAY = 1.5
 
 AUTOTHROTTLE_START_DELAY = 1.0
 AUTOTHROTTLE_MAX_DELAY = 30.0
