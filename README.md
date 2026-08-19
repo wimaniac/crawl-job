@@ -29,6 +29,8 @@ src/
         ├── pipelines.py
         └── settings.py
 cv_data/                    # Đặt file CV .pdf tại đây
+scripts/
+└──  benchmark.py           # Đo hiệu suất
 docker-compose.yml
 Dockerfile
 requirements.txt
